@@ -6,8 +6,8 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
-    <include domain="sharedpref" path="."/>
-    <exclude domain="file" path="icon_cache"/>
-    <exclude domain="file" path="active_live_wallpaper.mp4"/>
-    <exclude domain="file" path="launcher_apps_metadata.json"/>
+    <!--
+   <include domain="sharedpref" path="."/>
+   <exclude domain="sharedpref" path="device.xml"/>
+-->
 </full-backup-content>

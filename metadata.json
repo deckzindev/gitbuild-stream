@@ -1,8 +1,6 @@
 {
-  "name": "Home UI",
-  "description": "Launcher Android leve, fluido e personalizável com suporte a papéis de parede animados, pacotes de ícones e bloqueio biométrico.",
+  "name": "GitCompile",
+  "description": "Compilador em nuvem que envia código-fonte ZIP para o GitHub e monitora a compilação no GitHub Actions em tempo real.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

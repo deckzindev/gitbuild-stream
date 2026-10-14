@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Home UI"
+rootProject.name = "GitCompile"
 
 include(":app")
