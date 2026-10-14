@@ -96,20 +96,6 @@ fun GitCompilerApp(
                             label = { Text("Histórico") },
                             modifier = Modifier.testTag("nav_history")
                         )
-
-                        // 3. Perfil
-                        NavigationBarItem(
-                            selected = uiState.selectedTab == AppTab.PROFILE,
-                            onClick = { viewModel.selectTab(AppTab.PROFILE) },
-                            icon = {
-                                Icon(
-                                    imageVector = if (uiState.selectedTab == AppTab.PROFILE) Icons.Filled.Person else Icons.Outlined.Person,
-                                    contentDescription = "Perfil"
-                                )
-                            },
-                            label = { Text("Perfil") },
-                            modifier = Modifier.testTag("nav_profile")
-                        )
                     }
                 }
             }

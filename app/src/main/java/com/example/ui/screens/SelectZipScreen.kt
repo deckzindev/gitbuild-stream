@@ -10,8 +10,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -21,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -28,7 +31,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.viewmodel.AppScreen
-import com.example.ui.viewmodel.AppTab
 import com.example.ui.viewmodel.BuildStatus
 import com.example.ui.viewmodel.CompilerViewModel
 import com.example.ui.viewmodel.UiState
@@ -66,6 +68,8 @@ fun SelectZipScreen(
             uiState.buildStatus == BuildStatus.QUEUED ||
             uiState.buildStatus == BuildStatus.IN_PROGRESS
 
+    var showLogoutDialog by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -77,7 +81,7 @@ fun SelectZipScreen(
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(38.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
@@ -95,7 +99,7 @@ fun SelectZipScreen(
                                 fontSize = 18.sp
                             )
                             Text(
-                                text = "Compilador em Nuvem",
+                                text = "Compilador em Nuvem & Diagnóstico",
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -107,9 +111,7 @@ fun SelectZipScreen(
                         Surface(
                             shape = RoundedCornerShape(20.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier
-                                .padding(end = 12.dp)
-                                .clickable { viewModel.selectTab(AppTab.PROFILE) }
+                            modifier = Modifier.padding(end = 4.dp)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -131,6 +133,17 @@ fun SelectZipScreen(
                             }
                         }
                     }
+
+                    IconButton(
+                        onClick = { showLogoutDialog = true },
+                        modifier = Modifier.testTag("logout_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Logout,
+                            contentDescription = "Desconectar",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
@@ -143,25 +156,26 @@ fun SelectZipScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 22.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Banner discreto caso haja compilação em andamento
+            // Banner de Compilação Ativa (caso haja processo em andamento)
             AnimatedVisibility(
                 visible = isCompilingNow,
                 enter = fadeIn(),
                 exit = fadeOut()
             ) {
                 Surface(
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
                     border = androidx.compose.foundation.BorderStroke(
                         1.dp,
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .padding(bottom = 16.dp)
                         .clickable { viewModel.navigateTo(AppScreen.COMPILATION_STEPS) }
                 ) {
                     Row(
@@ -183,14 +197,14 @@ fun SelectZipScreen(
                             )
                             Column {
                                 Text(
-                                    text = "Compilação ativa",
+                                    text = "Compilação ativa em andamento",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
                                     text = uiState.selectedFileName,
-                                    fontSize = 11.sp,
+                                    fontSize = 11.5.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1
                                 )
@@ -198,7 +212,7 @@ fun SelectZipScreen(
                         }
                         TextButton(
                             onClick = { viewModel.navigateTo(AppScreen.COMPILATION_STEPS) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Text("Acompanhar", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(modifier = Modifier.width(4.dp))
@@ -212,9 +226,7 @@ fun SelectZipScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.weight(0.4f))
-
-            // Cartão Minimalista e Super Clean para Upload do Projeto
+            // Card Principal de Seleção do Arquivo ZIP
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -223,22 +235,21 @@ fun SelectZipScreen(
                     .testTag("select_zip_card"),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
                 ),
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                 )
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 36.dp),
+                        .padding(horizontal = 24.dp, vertical = 32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Ícone central elegante
                     Surface(
-                        modifier = Modifier.size(72.dp),
+                        modifier = Modifier.size(76.dp),
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                     ) {
@@ -246,13 +257,13 @@ fun SelectZipScreen(
                             Icon(
                                 imageVector = Icons.Outlined.FolderZip,
                                 contentDescription = null,
-                                modifier = Modifier.size(36.dp),
+                                modifier = Modifier.size(38.dp),
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
                     Text(
                         text = "Compilar Projeto",
@@ -264,20 +275,20 @@ fun SelectZipScreen(
                     Spacer(modifier = Modifier.height(6.dp))
 
                     Text(
-                        text = "Selecione o arquivo ZIP do código-fonte\npara gerar seu APK na nuvem",
-                        fontSize = 13.sp,
+                        text = "Selecione o arquivo ZIP do código-fonte\npara diagnosticar, corrigir e compilar o APK",
+                        fontSize = 13.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
-                        lineHeight = 18.sp
+                        lineHeight = 19.sp
                     )
 
-                    Spacer(modifier = Modifier.height(28.dp))
+                    Spacer(modifier = Modifier.height(24.dp))
 
                     Button(
                         onClick = { zipPickerLauncher.launch("*/*") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(52.dp)
                             .testTag("select_zip_button"),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -289,19 +300,138 @@ fun SelectZipScreen(
                         Icon(
                             imageVector = Icons.Default.CloudUpload,
                             contentDescription = null,
-                            modifier = Modifier.size(19.dp)
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = "Selecionar arquivo ZIP",
-                            fontSize = 14.5.sp,
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Cartão de Recursos Inteligentes do GitCompile
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
+                ),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "Recursos do Motor de Compilação",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    FeatureHighlightItem(
+                        icon = Icons.Default.AutoFixHigh,
+                        iconTint = Color(0xFF2E7D32),
+                        title = "Diagnóstico e Auto-Correção",
+                        description = "Detecta e resolve recursos duplicados, alinha o Gradle Wrapper e flags de AndroidX com segurança."
+                    )
+
+                    FeatureHighlightItem(
+                        icon = Icons.Default.Security,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                        title = "Código-Fonte Autêntico",
+                        description = "Garante que seu código original seja integralmente utilizado, sem substituição por templates de terceiros."
+                    )
+
+                    FeatureHighlightItem(
+                        icon = Icons.Default.CheckCircleOutline,
+                        iconTint = Color(0xFF3FB950),
+                        title = "Geração de APK Assinado",
+                        description = "Compilação automatizada na nuvem com assinatura Release pronta para instalar diretamente no celular."
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = { Text("Desconectar", fontWeight = FontWeight.Bold) },
+            text = { Text("Deseja realmente sair da sua conta do GitHub?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showLogoutDialog = false
+                        viewModel.logout()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Sair")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutDialog = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun FeatureHighlightItem(
+    icon: ImageVector,
+    iconTint: Color,
+    title: String,
+    description: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = iconTint.copy(alpha = 0.12f),
+            modifier = Modifier.size(34.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.5.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = description,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 16.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
         }
     }
 }

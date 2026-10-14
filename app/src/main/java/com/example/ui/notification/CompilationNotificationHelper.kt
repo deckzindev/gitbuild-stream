@@ -74,7 +74,7 @@ class CompilationNotificationHelper(private val context: Context) {
         fileName: String,
         stepNumber: Int,
         stepTitle: String,
-        totalSteps: Int = 4,
+        totalSteps: Int = 5,
         detail: String? = null
     ) {
         val cleanFileName = if (fileName.isNotBlank()) fileName else "Projeto.zip"

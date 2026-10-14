@@ -92,19 +92,24 @@ data class UiState(
     val downloadedApkFile: File? = null,
     val downloadErrorMessage: String? = null,
 
-    // 4 Real Stages Tracking
-    val step1Status: StepStatus = StepStatus.PENDING,
-    val step1Detail: String = "Validação dos arquivos e injeção do workflow",
-    val step2Status: StepStatus = StepStatus.PENDING,
-    val step2Detail: String = "Criação de commit e envio para o GitHub",
-    val step3Status: StepStatus = StepStatus.PENDING,
-    val step3Detail: String = "Execução do Gradle no GitHub Actions",
-    val step4Status: StepStatus = StepStatus.PENDING,
-    val step4Detail: String = "Geração e disponibilização do APK",
+    // Diagnostic & Static Analysis
+    val diagnosticReport: com.example.data.diagnostic.ProjectDiagnosticReport? = null,
+    val isDiagnosticExpanded: Boolean = true,
 
-    // History
+    // 5 Real Pipeline Stages Tracking
+    val step1Status: StepStatus = StepStatus.PENDING,
+    val step1Detail: String = "Análise estática do código-fonte e verificação de falhas",
+    val step2Status: StepStatus = StepStatus.PENDING,
+    val step2Detail: String = "Preparação do projeto e empacotamento Git",
+    val step3Status: StepStatus = StepStatus.PENDING,
+    val step3Detail: String = "Envio seguro dos arquivos para o repositório",
+    val step4Status: StepStatus = StepStatus.PENDING,
+    val step4Detail: String = "Compilação no runner cloud do GitHub Actions",
+    val step5Status: StepStatus = StepStatus.PENDING,
+    val step5Detail: String = "Validação final e disponibilização do APK",
+
+    // History (salvo localmente em cache/Room)
     val compilationHistory: List<CompilationEntity> = emptyList(),
-    val isSyncingHistory: Boolean = false,
     val downloadingRecordId: Long? = null,
     val downloadRecordProgress: Float = 0f,
     val currentRecordId: Long? = null
@@ -131,11 +136,18 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
     private var isCurrentlyCompiling: Boolean = false
 
     init {
-        // Observa o histórico de compilações localmente no Room
+        // Observa o histórico de compilações localmente no Room (apenas compilações feitas pelo usuário no app)
         viewModelScope.launch {
             compilationDao.getAllCompilations().collect { list ->
                 _uiState.value = _uiState.value.copy(compilationHistory = list)
             }
+        }
+
+        // Limpa quaisquer registros externos antigos previamente puxados do GitHub
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                compilationDao.deleteExternalSyncedRuns()
+            } catch (_: Exception) { }
         }
 
         if (storage.token.isNotBlank()) {
@@ -173,9 +185,6 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
 
     fun selectTab(tab: AppTab) {
         _uiState.value = _uiState.value.copy(selectedTab = tab)
-        if (tab == AppTab.HISTORY && _uiState.value.selectedRepoFullName.isNotBlank() && _uiState.value.compilationHistory.isEmpty()) {
-            syncHistoryFromGitHub()
-        }
     }
 
     fun submitToken(token: String) {
@@ -302,6 +311,10 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
         _uiState.value = _uiState.value.copy(currentScreen = screen)
     }
 
+    fun toggleDiagnosticExpanded() {
+        _uiState.value = _uiState.value.copy(isDiagnosticExpanded = !_uiState.value.isDiagnosticExpanded)
+    }
+
     /**
      * Chamado imediatamente quando o usuário seleciona um arquivo ZIP.
      */
@@ -321,14 +334,18 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                 isProcessingZip = true,
                 zipError = null,
                 buildStatus = BuildStatus.UPLOADING,
+                diagnosticReport = null,
+                isDiagnosticExpanded = true,
                 step1Status = StepStatus.IN_PROGRESS,
-                step1Detail = "Extraindo e validando arquivos do projeto...",
+                step1Detail = "Inspecionando arquivos e analisando erros...",
                 step2Status = StepStatus.PENDING,
-                step2Detail = "Aguardando preparação...",
+                step2Detail = "Aguardando diagnóstico...",
                 step3Status = StepStatus.PENDING,
-                step3Detail = "Aguardando envio...",
+                step3Detail = "Aguardando preparação...",
                 step4Status = StepStatus.PENDING,
-                step4Detail = "Aguardando compilação...",
+                step4Detail = "Aguardando envio...",
+                step5Status = StepStatus.PENDING,
+                step5Detail = "Aguardando compilação...",
                 activeRun = null,
                 activeJobs = emptyList(),
                 liveLogs = "",
@@ -352,9 +369,9 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
             _uiState.value = _uiState.value.copy(currentRecordId = recordId)
 
             // Atualiza notificação: ETAPA 1
-            notificationHelper.updateProgress(cleanFileName, 1, "Preparação do projeto", detail = "Validando arquivos")
+            notificationHelper.updateProgress(cleanFileName, 1, "Diagnóstico do código-fonte", totalSteps = 5, detail = "Inspecionando código")
 
-            // Process Zip
+            // Process Zip e Análise Estática
             val scanResult = try {
                 withContext(Dispatchers.IO) {
                     ZipProcessor.processZipUri(getApplication(), uri, cleanFileName)
@@ -375,11 +392,22 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                 return@launch
             }
 
+            // Diagnóstico concluído
             _uiState.value = _uiState.value.copy(
                 zipScan = scanResult,
+                diagnosticReport = scanResult.diagnosticReport,
                 isProcessingZip = false,
                 step1Status = StepStatus.SUCCESS,
-                step1Detail = "Projeto preparado (${scanResult.files.size} arquivos)."
+                step1Detail = scanResult.diagnosticReport.summaryMessage,
+                step2Status = StepStatus.IN_PROGRESS,
+                step2Detail = "Estruturando árvore do projeto (${scanResult.files.size} arquivos)..."
+            )
+            notificationHelper.updateProgress(
+                cleanFileName,
+                1,
+                "Diagnóstico do código-fonte",
+                totalSteps = 5,
+                detail = scanResult.diagnosticReport.summaryMessage
             )
 
             // Repositório selecionado ou criação automática
@@ -427,8 +455,21 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
 
             // Atualiza nome do repositório no registro
             withContext(Dispatchers.IO) {
-                compilationDao.updateCompilation(recordEntity.copy(id = recordId, repoFullName = repoFullName))
+                compilationDao.updateCompilation(
+                    recordEntity.copy(
+                        id = recordId,
+                        repoFullName = repoFullName,
+                        diagnosticSummary = scanResult.diagnosticReport.summaryMessage
+                    )
+                )
             }
+
+            // Etapa 2 concluída com sucesso
+            _uiState.value = _uiState.value.copy(
+                step2Status = StepStatus.SUCCESS,
+                step2Detail = "Projeto preparado (${scanResult.files.size} arquivos e CI universal)."
+            )
+            notificationHelper.updateProgress(cleanFileName, 2, "Preparação do projeto", totalSteps = 5, detail = "Estruturação dos arquivos concluída")
 
             // Executa compilação real
             executeCompilation(scanResult, repoFullName, _uiState.value.targetBranch, recordId)
@@ -441,8 +482,8 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
             val err = "Nome de repositório inválido: $repoFullName"
             _uiState.value = _uiState.value.copy(
                 buildStatus = BuildStatus.FAILURE,
-                step2Status = StepStatus.FAILURE,
-                step2Detail = err,
+                step3Status = StepStatus.FAILURE,
+                step3Detail = err,
                 buildErrorMessage = err
             )
             viewModelScope.launch(Dispatchers.IO) {
@@ -461,12 +502,12 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
 
         _uiState.value = _uiState.value.copy(
             buildStatus = BuildStatus.UPLOADING,
-            step2Status = StepStatus.IN_PROGRESS,
-            step2Detail = "Conectando ao GitHub ($repoFullName)...",
+            step3Status = StepStatus.IN_PROGRESS,
+            step3Detail = "Conectando ao GitHub ($repoFullName)...",
             uploadProgress = 0.05f
         )
-        // Atualiza notificação: ETAPA 2
-        notificationHelper.updateProgress(fileName, 2, "Envio do código-fonte", detail = "Conectando ao GitHub")
+        // Atualiza notificação: ETAPA 3
+        notificationHelper.updateProgress(fileName, 3, "Envio do código-fonte", totalSteps = 5, detail = "Conectando ao GitHub")
 
         compilationPollingJob = viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -475,7 +516,7 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                 val defaultBranch = repoDetails.defaultBranch.ifBlank { "main" }
                 val targetBranch = if (effectiveBranch.isBlank()) defaultBranch else effectiveBranch
 
-                // Step 2.1: Check parent commit
+                // Step 3.1: Check parent commit
                 var parentCommitSha: String? = null
                 var branchExists = false
                 try {
@@ -497,7 +538,7 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     } catch (_: Exception) { }
                 }
 
-                // Step 2.2: Upload blobs
+                // Step 3.2: Upload blobs
                 val totalFiles = scan.files.size
                 appendLog("Enviando $totalFiles arquivos para o GitHub...")
                 val treeItems = mutableListOf<GitTreeItem>()
@@ -530,15 +571,15 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     val progressFloat = 0.05f + (0.75f * (index + 1) / totalFiles)
                     _uiState.value = _uiState.value.copy(
                         uploadProgress = progressFloat,
-                        step2Detail = "Enviando arquivos ($pct%): ${index + 1} de $totalFiles"
+                        step3Detail = "Enviando arquivos ($pct%): ${index + 1} de $totalFiles"
                     )
 
                     if (index % 12 == 0 || index == totalFiles - 1) {
-                        notificationHelper.updateProgress(fileName, 2, "Envio do código-fonte ($pct%)", detail = "${index + 1} de $totalFiles arquivos")
+                        notificationHelper.updateProgress(fileName, 3, "Envio do código-fonte ($pct%)", totalSteps = 5, detail = "${index + 1} de $totalFiles arquivos")
                     }
                 }
 
-                // Step 2.3: Create Git Tree
+                // Step 3.3: Create Git Tree
                 appendLog("Criando árvore de arquivos Git...")
                 val treeResponse = apiClient.api.createTree(
                     owner,
@@ -546,7 +587,7 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     GitTreeRequest(tree = treeItems)
                 )
 
-                // Step 2.4: Create Commit
+                // Step 3.4: Create Commit
                 appendLog("Registrando commit de compilação...")
                 val commitMsg = "Compilação de ${scan.fileName} via GitCompile [${SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(Date())}]"
                 val commitResponse = apiClient.api.createCommit(
@@ -559,7 +600,7 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     )
                 )
 
-                // Step 2.5: Update branch
+                // Step 3.5: Update branch
                 appendLog("Atualizando ramo '$targetBranch'...")
                 var refUpdated = false
                 if (branchExists) {
@@ -591,17 +632,17 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     }
                 }
 
-                // Step 2 Concluída com sucesso
+                // Step 3 Concluída com sucesso -> Inicia Step 4
                 _uiState.value = _uiState.value.copy(
-                    step2Status = StepStatus.SUCCESS,
-                    step2Detail = "Código enviado com sucesso para o GitHub.",
+                    step3Status = StepStatus.SUCCESS,
+                    step3Detail = "Código enviado com sucesso para o GitHub.",
                     uploadProgress = 1.0f,
                     buildStatus = BuildStatus.QUEUED,
-                    step3Status = StepStatus.IN_PROGRESS,
-                    step3Detail = "Aguardando executor virtual do GitHub Actions..."
+                    step4Status = StepStatus.IN_PROGRESS,
+                    step4Detail = "Aguardando executor virtual do GitHub Actions..."
                 )
-                // Atualiza notificação: ETAPA 3
-                notificationHelper.updateProgress(fileName, 3, "Compilação do APK no GitHub Actions", detail = "Iniciando executor virtual...")
+                // Atualiza notificação: ETAPA 4
+                notificationHelper.updateProgress(fileName, 4, "Compilação no GitHub Actions", totalSteps = 5, detail = "Iniciando executor virtual...")
 
                 // Dispara workflow
                 try {
@@ -613,7 +654,7 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     )
                 } catch (_: Exception) { }
 
-                // Step 3: Monitora em tempo real
+                // Step 4: Monitora em tempo real
                 pollWorkflow(owner, repo, targetBranch, commitResponse.sha, fileName, recordId)
 
             } catch (e: Exception) {
@@ -622,8 +663,8 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                 appendLog("❌ $err")
                 _uiState.value = _uiState.value.copy(
                     buildStatus = BuildStatus.FAILURE,
-                    step2Status = StepStatus.FAILURE,
-                    step2Detail = err,
+                    step3Status = StepStatus.FAILURE,
+                    step3Detail = err,
                     buildErrorMessage = err
                 )
                 notificationHelper.notifyFailure(fileName, "Falha no envio do código")
@@ -667,12 +708,13 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     foundRun = matching
                     _uiState.value = _uiState.value.copy(
                         activeRun = matching,
-                        step3Detail = "GitHub Actions #${matching.runNumber}: em andamento"
+                        step4Detail = "GitHub Actions #${matching.runNumber}: em andamento"
                     )
                     notificationHelper.updateProgress(
                         fileName,
-                        3,
+                        4,
                         "Compilação do APK (#${matching.runNumber})",
+                        totalSteps = 5,
                         detail = "Executando no GitHub Actions..."
                     )
                     // Atualiza no banco
@@ -707,8 +749,8 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
             appendLog("❌ $err")
             _uiState.value = _uiState.value.copy(
                 buildStatus = BuildStatus.FAILURE,
-                step3Status = StepStatus.FAILURE,
-                step3Detail = "Tempo limite excedido no GitHub Actions.",
+                step4Status = StepStatus.FAILURE,
+                step4Detail = "Tempo limite excedido no GitHub Actions.",
                 buildErrorMessage = err
             )
             notificationHelper.notifyFailure(fileName, "Timeout no GitHub Actions")
@@ -756,7 +798,7 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                 val currentStepName = primaryJob?.steps?.firstOrNull { it.status == "in_progress" }?.name
                     ?: "Executando Gradle no GitHub Actions..."
 
-                // Checagem rigorosa de conclusão (evita que a notificação trave na etapa 3)
+                // Checagem rigorosa de conclusão (evita que a notificação trave na etapa 4)
                 val isFinished = currentRun.status.equals("completed", ignoreCase = true) ||
                         !currentRun.conclusion.isNullOrBlank()
 
@@ -767,21 +809,22 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                     val isSuccess = currentRun.conclusion.equals("success", ignoreCase = true)
 
                     if (isSuccess) {
-                        // ETAPA 3 CONCLUÍDA -> ETAPA 4 INICIADA
+                        // ETAPA 4 CONCLUÍDA -> ETAPA 5 INICIADA
                         _uiState.value = _uiState.value.copy(
                             activeRun = currentRun,
                             activeJobs = jobs,
-                            step3Status = StepStatus.SUCCESS,
-                            step3Detail = "Gradle finalizado com sucesso!",
-                            step4Status = StepStatus.IN_PROGRESS,
-                            step4Detail = "Localizando arquivos e preparando APK..."
+                            step4Status = StepStatus.SUCCESS,
+                            step4Detail = "Gradle finalizado com sucesso!",
+                            step5Status = StepStatus.IN_PROGRESS,
+                            step5Detail = "Localizando arquivos e preparando APK..."
                         )
 
-                        // Atualiza notificação: ETAPA 4
+                        // Atualiza notificação: ETAPA 5
                         notificationHelper.updateProgress(
                             fileName,
-                            4,
+                            5,
                             "Finalização do APK",
+                            totalSteps = 5,
                             detail = "Preparando APK gerado..."
                         )
 
@@ -803,12 +846,12 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
 
                         _uiState.value = _uiState.value.copy(
                             buildStatus = BuildStatus.SUCCESS,
-                            step4Status = StepStatus.SUCCESS,
-                            step4Detail = if (artifactsList.isNotEmpty()) "APK disponível para download!" else "Compilação concluída no GitHub Actions.",
+                            step5Status = StepStatus.SUCCESS,
+                            step5Detail = if (artifactsList.isNotEmpty()) "APK disponível para download e instalação!" else "Compilação concluída no GitHub Actions.",
                             artifacts = artifactsList
                         )
 
-                        // Notificação FINAL de sucesso (cancela a etapa 3/4 em andamento e emite sucesso)
+                        // Notificação FINAL de sucesso (cancela a etapa em andamento e emite sucesso)
                         notificationHelper.notifySuccess(fileName, "APK")
                         appendLog("\n🎉 COMPILAÇÃO FINALIZADA COM SUCESSO!")
 
@@ -825,7 +868,8 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                                 htmlUrl = currentRun.htmlUrl,
                                 artifactId = apkArtifact?.id,
                                 artifactName = apkArtifact?.name ?: "APK",
-                                artifactDownloadUrl = apkArtifact?.archiveDownloadUrl
+                                artifactDownloadUrl = apkArtifact?.archiveDownloadUrl,
+                                diagnosticSummary = _uiState.value.diagnosticReport?.summaryMessage
                             )
                         )
                     } else {
@@ -835,14 +879,14 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                             buildStatus = BuildStatus.FAILURE,
                             activeRun = currentRun,
                             activeJobs = jobs,
-                            step3Status = StepStatus.FAILURE,
-                            step3Detail = "Compilação falhou no Gradle ($failReason).",
-                            step4Status = StepStatus.PENDING,
-                            step4Detail = "Cancelado devido a falha na compilação.",
-                            buildErrorMessage = "A compilação do APK falhou no GitHub Actions. Verifique os logs do erro para mais detalhes."
+                            step4Status = StepStatus.FAILURE,
+                            step4Detail = "Compilação falhou no Gradle ($failReason).",
+                            step5Status = StepStatus.PENDING,
+                            step5Detail = "Cancelado devido a falha na compilação.",
+                            buildErrorMessage = "A compilação do APK falhou no GitHub Actions. Verifique os logs do erro e o diagnóstico para mais detalhes."
                         )
 
-                        // Notificação FINAL de falha (cancela a etapa 3 em andamento e emite falha)
+                        // Notificação FINAL de falha (cancela a etapa em andamento e emite falha)
                         notificationHelper.notifyFailure(fileName, "Falha no Gradle ($failReason)")
                         appendLog("\n❌ COMPILAÇÃO FALHOU NO GITHUB ACTIONS.")
 
@@ -856,7 +900,8 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                                 runId = currentRun.id,
                                 runNumber = currentRun.runNumber,
                                 htmlUrl = currentRun.htmlUrl,
-                                errorMessage = "Compilação falhou no Gradle: $failReason"
+                                errorMessage = "Compilação falhou no Gradle: $failReason",
+                                diagnosticSummary = _uiState.value.diagnosticReport?.summaryMessage
                             )
                         )
                     }
@@ -867,13 +912,14 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                             buildStatus = BuildStatus.IN_PROGRESS,
                             activeRun = currentRun,
                             activeJobs = jobs,
-                            step3Status = StepStatus.IN_PROGRESS,
-                            step3Detail = currentStepName
+                            step4Status = StepStatus.IN_PROGRESS,
+                            step4Detail = currentStepName
                         )
                         notificationHelper.updateProgress(
                             fileName,
-                            3,
+                            4,
                             "Compilação do APK",
+                            totalSteps = 5,
                             detail = currentStepName
                         )
                     } else {
@@ -881,13 +927,14 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
                             buildStatus = BuildStatus.QUEUED,
                             activeRun = currentRun,
                             activeJobs = jobs,
-                            step3Status = StepStatus.IN_PROGRESS,
-                            step3Detail = "Na fila de execução do GitHub Actions..."
+                            step4Status = StepStatus.IN_PROGRESS,
+                            step4Detail = "Na fila de execução do GitHub Actions..."
                         )
                         notificationHelper.updateProgress(
                             fileName,
-                            3,
+                            4,
                             "Fila do GitHub Actions",
+                            totalSteps = 5,
                             detail = "Aguardando executor virtual..."
                         )
                     }
@@ -1036,65 +1083,7 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /**
-     * Sincroniza o histórico com os workflows executados no GitHub Actions.
-     */
-    fun syncHistoryFromGitHub() {
-        val repoFullName = _uiState.value.selectedRepoFullName
-        if (repoFullName.isBlank()) return
-        val parts = repoFullName.split("/")
-        if (parts.size != 2) return
 
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.value = _uiState.value.copy(isSyncingHistory = true)
-            try {
-                val runsResp = apiClient.api.getWorkflowRuns(parts[0], parts[1], perPage = 25)
-                val dateParser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("UTC")
-                }
-
-                for (run in runsResp.workflowRuns) {
-                    val existing = compilationDao.getCompilationByRunId(run.id)
-                    val status = if (run.status.equals("completed", ignoreCase = true)) {
-                        if (run.conclusion.equals("success", ignoreCase = true)) "SUCCESS" else "FAILURE"
-                    } else if (run.status.equals("in_progress", ignoreCase = true)) {
-                        "IN_PROGRESS"
-                    } else {
-                        "QUEUED"
-                    }
-
-                    if (existing == null) {
-                        val parsedTime = try {
-                            dateParser.parse(run.createdAt)?.time ?: System.currentTimeMillis()
-                        } catch (_: Exception) {
-                            System.currentTimeMillis()
-                        }
-                        val title = if (run.name.isNotBlank() && !run.name.equals("Cloud Compiler CI", ignoreCase = true)) {
-                            run.name
-                        } else {
-                            "Projeto (#${run.runNumber})"
-                        }
-
-                        compilationDao.insertCompilation(
-                            CompilationEntity(
-                                fileName = title,
-                                timestamp = parsedTime,
-                                status = status,
-                                repoFullName = repoFullName,
-                                branch = run.headBranch.ifBlank { "main" },
-                                runId = run.id,
-                                runNumber = run.runNumber,
-                                htmlUrl = run.htmlUrl
-                            )
-                        )
-                    } else if (existing.status != status) {
-                        compilationDao.updateCompilation(existing.copy(status = status, htmlUrl = run.htmlUrl))
-                    }
-                }
-            } catch (_: Exception) { }
-            _uiState.value = _uiState.value.copy(isSyncingHistory = false)
-        }
-    }
 
     fun deleteCompilationRecord(record: CompilationEntity) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -1152,10 +1141,10 @@ class CompilerViewModel(application: Application) : AndroidViewModel(application
 
         _uiState.value = _uiState.value.copy(
             buildStatus = BuildStatus.CANCELLED,
-            step3Status = StepStatus.FAILURE,
-            step3Detail = "Compilação cancelada pelo usuário.",
-            step4Status = StepStatus.PENDING,
-            step4Detail = "Processo interrompido."
+            step4Status = StepStatus.FAILURE,
+            step4Detail = "Compilação cancelada pelo usuário.",
+            step5Status = StepStatus.PENDING,
+            step5Detail = "Processo interrompido."
         )
     }
 

@@ -19,5 +19,6 @@ data class CompilationEntity(
     val artifactName: String? = null,
     val artifactDownloadUrl: String? = null,
     val errorMessage: String? = null,
-    val localApkPath: String? = null
+    val localApkPath: String? = null,
+    val diagnosticSummary: String? = null
 )

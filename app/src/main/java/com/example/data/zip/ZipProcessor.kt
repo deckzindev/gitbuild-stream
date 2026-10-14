@@ -2,9 +2,11 @@ package com.example.data.zip
 
 import android.content.Context
 import android.net.Uri
+import com.example.data.diagnostic.DiagnosticIssue
+import com.example.data.diagnostic.IssueSeverity
+import com.example.data.diagnostic.ProjectDiagnosticReport
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
-import java.nio.charset.StandardCharsets
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
@@ -36,15 +38,16 @@ data class ZipScanResult(
     val detectedTechnologies: List<String>,
     val hadOriginalWorkflows: Boolean,
     val workflowStandardized: Boolean = true,
-    val standardizationResult: StandardizationResult = StandardizationResult(0, 0, emptyList())
+    val standardizationResult: StandardizationResult = StandardizationResult(0, 0, emptyList()),
+    val diagnosticReport: ProjectDiagnosticReport
 )
 
 object ZipProcessor {
 
-    private const val MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024 // 10MB per individual file
-    private const val MAX_TOTAL_FILES = 800
+    private const val MAX_FILE_SIZE_BYTES = 12 * 1024 * 1024 // 12MB per file
+    private const val MAX_TOTAL_FILES = 1200
 
-    // Constantes de padronização inteligente e estável
+    // Constantes de padronização universal estável
     const val TARGET_GRADLE_VERSION = "8.7"
     const val TARGET_GRADLE_DISTRIBUTION_URL = "https\\://services.gradle.org/distributions/gradle-8.7-bin.zip"
     const val TARGET_AGP_VERSION = "8.5.2"
@@ -71,7 +74,7 @@ object ZipProcessor {
                         while (zis.read(buffer).also { read = it } != -1) {
                             entryBytes += read
                             if (entryBytes > MAX_FILE_SIZE_BYTES) {
-                                break // Skip overly large binary file
+                                break // Arquivo binário muito pesado, pula
                             }
                             baos.write(buffer, 0, read)
                         }
@@ -89,28 +92,29 @@ object ZipProcessor {
             }
         }
 
-        // If all files share a common single root folder (e.g., project-master/src/...), strip it
+        if (rawFiles.isEmpty()) {
+            throw IllegalStateException("O arquivo ZIP está vazio ou não contém arquivos legíveis.")
+        }
+
+        // Se todos os arquivos compartilham uma pasta raiz (ex: NomeProjeto-master/src/...), remove o prefixo redundante
         val cleanedFiles = stripCommonRootDirectory(rawFiles)
 
-        // Check if original ZIP had any workflows
+        // Verifica se havia workflows originais no ZIP
         val hadOriginalWorkflows = cleanedFiles.any {
             it.path.startsWith(".github/workflows/")
         }
 
-        // Filter out any third-party/old workflows so GitCompile standardization is ALWAYS 100% enforced
+        // Remove workflows antigos conflitantes para garantir execução oficial estável
         val filteredFiles = cleanedFiles.filterNot {
             it.path.startsWith(".github/workflows/")
         }.toMutableList()
 
-        // 1. Remover recursos duplicados do Android (.png vs .webp vs .jpg com mesmo nome na mesma pasta de densidade)
-        val (dedupedFiles, dedupDetails) = deduplicateAndroidResources(filteredFiles)
+        // Executa o MOTOR DE ANÁLISE ESTÁTICA E DIAGNÓSTICO INTELIGENTE
+        val (diagnosedFiles, diagnosticReport) = analyzeAndDiagnoseProject(filteredFiles, originalFileName)
 
-        // 2. Executar a COMPILAÇÃO INTELIGENTE: padronizar todos os arquivos de configuração do projeto antes de enviar ao GitHub
-        val (standardizedFiles, standardizationDetails) = standardizeProjectFiles(dedupedFiles)
-
-        // ALWAYS inject GitCompile's official verified CI workflow
+        // Injeta o workflow oficial do GitCompile universal com auto-cura em tempo de execução
         val workflowContent = generateUniversalWorkflow()
-        standardizedFiles.add(
+        diagnosedFiles.add(
             ExtractedFile(
                 path = ".github/workflows/compile.yml",
                 bytes = workflowContent.toByteArray(Charsets.UTF_8),
@@ -118,28 +122,408 @@ object ZipProcessor {
             )
         )
 
-        val detectedTechnologies = detectTechnologies(standardizedFiles)
-        val combinedDetails = dedupDetails + standardizationDetails.details
+        val summaryDetails = diagnosticReport.fixedIssues.map { it.fixAction ?: it.title }
 
         return ZipScanResult(
             fileName = originalFileName,
             totalSize = totalBytesRead,
-            files = standardizedFiles,
-            detectedTechnologies = detectedTechnologies,
+            files = diagnosedFiles,
+            detectedTechnologies = diagnosticReport.detectedTechnologies,
             hadOriginalWorkflows = hadOriginalWorkflows,
             workflowStandardized = true,
-            standardizationResult = standardizationDetails.copy(details = combinedDetails)
+            standardizationResult = StandardizationResult(
+                modifiedFilesCount = diagnosticReport.autoFixesCount,
+                addedFilesCount = if (diagnosedFiles.size > filteredFiles.size) diagnosedFiles.size - filteredFiles.size else 0,
+                details = summaryDetails
+            ),
+            diagnosticReport = diagnosticReport
         )
     }
 
     /**
-     * Remove recursos duplicados no Android (ex: ic_launcher.png e ic_launcher.webp na mesma pasta de mipmap ou drawable).
+     * Motor completo de inspeção, análise de erros comuns, detecção de falhas e auto-correção segura.
+     */
+    fun analyzeAndDiagnoseProject(
+        inputFiles: List<ExtractedFile>,
+        projectName: String
+    ): Pair<MutableList<ExtractedFile>, ProjectDiagnosticReport> {
+        val workingFiles = inputFiles.toMutableList()
+        val detectedIssues = mutableListOf<DiagnosticIssue>()
+        var issueCounter = 1
+
+        val detectedTechnologies = detectTechnologies(workingFiles)
+
+        // -------------------------------------------------------------
+        // 1. Diagnóstico e Resolução de Recursos Android Duplicados
+        // -------------------------------------------------------------
+        val (dedupedFiles, removedResourceDetails) = deduplicateAndroidResources(workingFiles)
+        workingFiles.clear()
+        workingFiles.addAll(dedupedFiles)
+
+        for (removedDetail in removedResourceDetails) {
+            detectedIssues.add(
+                DiagnosticIssue(
+                    id = "RES_${issueCounter++}",
+                    title = "Recurso Android duplicado",
+                    description = "Dois ou mais arquivos com extensões concorrentes (.png, .webp, .jpg) colidiam na mesma pasta de recursos do Android, o que causaria erro fatal no AAPT / Resource Merger.",
+                    filePath = removedDetail.filePath,
+                    severity = IssueSeverity.WARNING,
+                    isAutoFixable = true,
+                    isFixed = true,
+                    fixAction = removedDetail.description,
+                    suggestedSolution = "Mantenha apenas um formato para cada recurso com o mesmo nome na mesma pasta de densidade."
+                )
+            )
+        }
+
+        // -------------------------------------------------------------
+        // 2. Diagnóstico e Validação do AndroidManifest.xml
+        // -------------------------------------------------------------
+        val manifestIndices = workingFiles.indices.filter { workingFiles[it].path.endsWith("AndroidManifest.xml") }
+        for (idx in manifestIndices) {
+            val manifestFile = workingFiles[idx]
+            val manifestText = String(manifestFile.bytes, Charsets.UTF_8)
+            var updatedManifest = manifestText
+            var manifestModified = false
+
+            // Verifica se possui activities/services/receivers com intent-filter sem android:exported
+            // (Requisito obrigatório no Android 12+ / targetSdk >= 31)
+            val intentFilterRegex = Regex("""(<(activity|service|receiver)[\s\S]*?<intent-filter>[\s\S]*?</\2>)""", RegexOption.IGNORE_CASE)
+            val matches = intentFilterRegex.findAll(manifestText)
+
+            for (match in matches) {
+                val componentBlock = match.value
+                val tagOpening = componentBlock.substringBefore(">")
+                if (!tagOpening.contains("android:exported")) {
+                    // Falha crítica detectada! Auto-correção segura
+                    val isLauncher = componentBlock.contains("android.intent.action.MAIN") || componentBlock.contains("android.intent.category.LAUNCHER")
+                    val exportedValue = if (isLauncher) "true" else "false"
+                    val fixedOpening = tagOpening.trimEnd() + " android:exported=\"$exportedValue\""
+                    val fixedBlock = componentBlock.replaceFirst(tagOpening, fixedOpening)
+                    updatedManifest = updatedManifest.replace(componentBlock, fixedBlock)
+                    manifestModified = true
+
+                    detectedIssues.add(
+                        DiagnosticIssue(
+                            id = "MAN_${issueCounter++}",
+                            title = "android:exported ausente no AndroidManifest",
+                            description = "No Android 12 (API 31)+, todo componente com <intent-filter> requer o atributo 'android:exported' explícito para compilar sem erros.",
+                            filePath = manifestFile.path,
+                            severity = IssueSeverity.ERROR,
+                            isAutoFixable = true,
+                            isFixed = true,
+                            fixAction = "Inserido android:exported=\"$exportedValue\" no componente correspondente.",
+                            suggestedSolution = "Declare sempre android:exported=\"true\" ou \"false\" para activities, services e receivers com intent-filter."
+                        )
+                    )
+                }
+            }
+
+            // Verifica se a tag <application> existe
+            if (!manifestText.contains("<application")) {
+                detectedIssues.add(
+                    DiagnosticIssue(
+                        id = "MAN_${issueCounter++}",
+                        title = "Tag <application> não encontrada no manifest",
+                        description = "O arquivo AndroidManifest.xml não parece conter a declaração principal de <application>.",
+                        filePath = manifestFile.path,
+                        severity = IssueSeverity.WARNING,
+                        isAutoFixable = false,
+                        isFixed = false,
+                        suggestedSolution = "Certifique-se de que o AndroidManifest.xml possui <application android:label=\"...\">."
+                    )
+                )
+            }
+
+            if (manifestModified) {
+                workingFiles[idx] = manifestFile.copy(bytes = updatedManifest.toByteArray(Charsets.UTF_8))
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 3. Diagnóstico e Compatibilidade do Gradle Wrapper
+        // -------------------------------------------------------------
+        val wrapperPath = "gradle/wrapper/gradle-wrapper.properties"
+        val wrapperFileIndex = workingFiles.indexOfFirst { it.path.endsWith(wrapperPath) }
+
+        if (wrapperFileIndex >= 0) {
+            val wrapperFile = workingFiles[wrapperFileIndex]
+            val content = String(wrapperFile.bytes, Charsets.UTF_8)
+            val distUrlMatch = Regex("""distributionUrl\s*=\s*(.*)""").find(content)
+            val currentUrl = distUrlMatch?.groupValues?.getOrNull(1)?.trim() ?: ""
+
+            val isIncompatibleGradle = currentUrl.contains("gradle-9.") ||
+                    currentUrl.contains("gradle-6.") ||
+                    currentUrl.contains("gradle-7.") ||
+                    currentUrl.startsWith("http://")
+
+            if (isIncompatibleGradle || !currentUrl.contains(TARGET_GRADLE_VERSION)) {
+                val standardized = standardizeGradleWrapperProperties(content)
+                workingFiles[wrapperFileIndex] = wrapperFile.copy(bytes = standardized.toByteArray(Charsets.UTF_8))
+
+                detectedIssues.add(
+                    DiagnosticIssue(
+                        id = "GRADLE_${issueCounter++}",
+                        title = "Versão do Gradle Wrapper instável ou incompatível",
+                        description = "O projeto utilizava uma versão de Gradle ($currentUrl) sujeita a quebras de API ou incompatibilidade com o Android Gradle Plugin.",
+                        filePath = wrapperFile.path,
+                        severity = IssueSeverity.WARNING,
+                        isAutoFixable = true,
+                        isFixed = true,
+                        fixAction = "Gradle Wrapper alinhado para a distribuição estável $TARGET_GRADLE_VERSION.",
+                        suggestedSolution = "Utilize Gradle 8.7 para compatibilidade estável com AGP 8.5+ e JDK 17."
+                    )
+                )
+            }
+        } else if (workingFiles.any { it.path.endsWith("build.gradle") || it.path.endsWith("build.gradle.kts") }) {
+            // Ausência de wrapper em projeto Gradle
+            val newWrapperContent = """
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=$TARGET_GRADLE_DISTRIBUTION_URL
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+""".trimIndent()
+            workingFiles.add(ExtractedFile(wrapperPath, newWrapperContent.toByteArray(Charsets.UTF_8), isText = true))
+            detectedIssues.add(
+                DiagnosticIssue(
+                    id = "GRADLE_${issueCounter++}",
+                    title = "gradle-wrapper.properties ausente",
+                    description = "O projeto Android não possuía o arquivo gradle-wrapper.properties, o que impediria a compilação no runner na nuvem.",
+                    filePath = wrapperPath,
+                    severity = IssueSeverity.ERROR,
+                    isAutoFixable = true,
+                    isFixed = true,
+                    fixAction = "Criado gradle-wrapper.properties apontando para Gradle $TARGET_GRADLE_VERSION.",
+                    suggestedSolution = "Sempre inclua a pasta gradle/wrapper no seu repositório."
+                )
+            )
+        }
+
+        // -------------------------------------------------------------
+        // 4. Diagnóstico do Script Executável 'gradlew'
+        // -------------------------------------------------------------
+        val isGradleProject = workingFiles.any {
+            it.path.endsWith("build.gradle") || it.path.endsWith("build.gradle.kts") || it.path.endsWith("settings.gradle")
+        }
+
+        if (isGradleProject && workingFiles.none { it.path == "gradlew" }) {
+            val gradlewScript = generateDefaultGradlew()
+            workingFiles.add(ExtractedFile("gradlew", gradlewScript.toByteArray(Charsets.UTF_8), isText = true))
+            detectedIssues.add(
+                DiagnosticIssue(
+                    id = "GRADLE_${issueCounter++}",
+                    title = "Script 'gradlew' ausente no projeto",
+                    description = "O executável gradlew não foi encontrado na raiz do projeto.",
+                    filePath = "gradlew",
+                    severity = IssueSeverity.WARNING,
+                    isAutoFixable = true,
+                    isFixed = true,
+                    fixAction = "Injetado wrapper executável 'gradlew' universal.",
+                    suggestedSolution = "Gere o wrapper com 'gradle wrapper' na raiz do seu projeto local."
+                )
+            )
+        }
+
+        // -------------------------------------------------------------
+        // 5. Diagnóstico de Flags no gradle.properties
+        // -------------------------------------------------------------
+        if (isGradleProject) {
+            val propsIndex = workingFiles.indexOfFirst { it.path == "gradle.properties" }
+            if (propsIndex < 0) {
+                val defaultProps = """
+org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+android.enableJetifier=true
+android.nonTransitiveRClass=true
+org.gradle.parallel=true
+org.gradle.caching=true
+""".trimIndent()
+                workingFiles.add(ExtractedFile("gradle.properties", defaultProps.toByteArray(Charsets.UTF_8), isText = true))
+                detectedIssues.add(
+                    DiagnosticIssue(
+                        id = "CONF_${issueCounter++}",
+                        title = "gradle.properties ausente",
+                        description = "Sem gradle.properties, projetos modernos do Android podem falhar por falta de flags do AndroidX e limites de memória JVM.",
+                        filePath = "gradle.properties",
+                        severity = IssueSeverity.WARNING,
+                        isAutoFixable = true,
+                        isFixed = true,
+                        fixAction = "Criado gradle.properties com suporte total a AndroidX, Jetifier e memória otimizada.",
+                        suggestedSolution = "Adicione gradle.properties com android.useAndroidX=true."
+                    )
+                )
+            } else {
+                val propsFile = workingFiles[propsIndex]
+                val originalProps = String(propsFile.bytes, Charsets.UTF_8)
+                var updatedProps = originalProps
+                var modified = false
+
+                if (!updatedProps.contains("android.useAndroidX")) {
+                    updatedProps += "\nandroid.useAndroidX=true\n"
+                    modified = true
+                }
+                if (!updatedProps.contains("android.enableJetifier")) {
+                    updatedProps += "\nandroid.enableJetifier=true\n"
+                    modified = true
+                }
+                if (!updatedProps.contains("org.gradle.jvmargs")) {
+                    updatedProps += "\norg.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8\n"
+                    modified = true
+                }
+
+                if (modified) {
+                    workingFiles[propsIndex] = propsFile.copy(bytes = updatedProps.toByteArray(Charsets.UTF_8))
+                    detectedIssues.add(
+                        DiagnosticIssue(
+                            id = "CONF_${issueCounter++}",
+                            title = "Flags de compatibilidade AndroidX aplicadas",
+                            description = "Injetadas diretivas de compatibilidade e otimização de memória em gradle.properties.",
+                            filePath = "gradle.properties",
+                            severity = IssueSeverity.INFO,
+                            isAutoFixable = true,
+                            isFixed = true,
+                            fixAction = "Adicionadas flags android.useAndroidX=true, Jetifier e alocação JVM.",
+                            suggestedSolution = "Configure android.useAndroidX=true no gradle.properties."
+                        )
+                    )
+                }
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 6. Diagnóstico de Incompatibilidades no build.gradle / build.gradle.kts
+        // -------------------------------------------------------------
+        for (i in workingFiles.indices) {
+            val file = workingFiles[i]
+            if (file.path.endsWith("build.gradle")) {
+                val original = String(file.bytes, Charsets.UTF_8)
+                val standardized = standardizeBuildGradle(original)
+                if (standardized != original) {
+                    workingFiles[i] = file.copy(bytes = standardized.toByteArray(Charsets.UTF_8))
+                    detectedIssues.add(
+                        DiagnosticIssue(
+                            id = "BUILD_${issueCounter++}",
+                            title = "Incompatibilidade no build.gradle",
+                            description = "Versões de plugins do Android Gradle Plugin (AGP) ou Kotlin foram alinhadas para versões universais testadas.",
+                            filePath = file.path,
+                            severity = IssueSeverity.WARNING,
+                            isAutoFixable = true,
+                            isFixed = true,
+                            fixAction = "Alinhado AGP para $TARGET_AGP_VERSION e Kotlin para $TARGET_KOTLIN_VERSION.",
+                            suggestedSolution = "Alinhe as versões dos plugins no bloco buildscript ou plugins."
+                        )
+                    )
+                }
+            } else if (file.path.endsWith("build.gradle.kts")) {
+                val original = String(file.bytes, Charsets.UTF_8)
+                val standardized = standardizeBuildGradleKts(original)
+                if (standardized != original) {
+                    workingFiles[i] = file.copy(bytes = standardized.toByteArray(Charsets.UTF_8))
+                    detectedIssues.add(
+                        DiagnosticIssue(
+                            id = "BUILD_${issueCounter++}",
+                            title = "Incompatibilidade no build.gradle.kts",
+                            description = "Plugins e dependências Kotlin DSL foram ajustados para versões compatíveis.",
+                            filePath = file.path,
+                            severity = IssueSeverity.WARNING,
+                            isAutoFixable = true,
+                            isFixed = true,
+                            fixAction = "Alinhado AGP para $TARGET_AGP_VERSION e Kotlin para $TARGET_KOTLIN_VERSION.",
+                            suggestedSolution = "Utilize versões compatíveis no catálogo toml ou nas chamadas id()."
+                        )
+                    )
+                }
+            } else if (file.path.endsWith("gradle/libs.versions.toml")) {
+                val original = String(file.bytes, Charsets.UTF_8)
+                val standardized = standardizeVersionsToml(original)
+                if (standardized != original) {
+                    workingFiles[i] = file.copy(bytes = standardized.toByteArray(Charsets.UTF_8))
+                    detectedIssues.add(
+                        DiagnosticIssue(
+                            id = "TOML_${issueCounter++}",
+                            title = "Versões desatualizadas em libs.versions.toml",
+                            description = "O catálogo de versões do projeto continha versões de AGP ou Kotlin desalinhadas.",
+                            filePath = file.path,
+                            severity = IssueSeverity.INFO,
+                            isAutoFixable = true,
+                            isFixed = true,
+                            fixAction = "Atualizadas versões de agp ($TARGET_AGP_VERSION) e kotlin ($TARGET_KOTLIN_VERSION) no TOML.",
+                            suggestedSolution = "Mantenha o catálogo de versões sincronizado."
+                        )
+                    )
+                }
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 7. Diagnóstico de Repositórios Obsoletos (ex: jcenter())
+        // -------------------------------------------------------------
+        val repoIndices = workingFiles.indices.filter {
+            workingFiles[it].path.endsWith("build.gradle") ||
+            workingFiles[it].path.endsWith("build.gradle.kts") ||
+            workingFiles[it].path.endsWith("settings.gradle") ||
+            workingFiles[it].path.endsWith("settings.gradle.kts")
+        }
+        for (idx in repoIndices) {
+            val file = workingFiles[idx]
+            val text = String(file.bytes, Charsets.UTF_8)
+            if (text.contains("jcenter()")) {
+                val replaced = text.replace("jcenter()", "mavenCentral()")
+                workingFiles[idx] = file.copy(bytes = replaced.toByteArray(Charsets.UTF_8))
+                detectedIssues.add(
+                    DiagnosticIssue(
+                        id = "REPO_${issueCounter++}",
+                        title = "Repositório obsoleto jcenter() detectado",
+                        description = "O repositório jcenter foi descontinuado e causa falhas de resolução de dependências no Gradle.",
+                        filePath = file.path,
+                        severity = IssueSeverity.WARNING,
+                        isAutoFixable = true,
+                        isFixed = true,
+                        fixAction = "Substituído jcenter() por mavenCentral().",
+                        suggestedSolution = "Remova jcenter() e adicione mavenCentral() e google() nos repositórios."
+                    )
+                )
+            }
+        }
+
+        val autoFixesCount = detectedIssues.count { it.isFixed }
+        val warningsCount = detectedIssues.count { !it.isFixed && it.severity == IssueSeverity.WARNING }
+        val errorsCount = detectedIssues.count { !it.isFixed && it.severity == IssueSeverity.ERROR }
+
+        val summaryMessage = when {
+            autoFixesCount > 0 -> "$autoFixesCount problemas foram diagnosticados e corrigidos automaticamente com sucesso."
+            warningsCount > 0 -> "Diagnóstico concluído com $warningsCount avisos informativos."
+            else -> "Código-fonte inspecionado com sucesso. Nenhuma falha estrutural detectada."
+        }
+
+        val report = ProjectDiagnosticReport(
+            totalFilesAnalyzed = workingFiles.size,
+            detectedTechnologies = detectedTechnologies,
+            issues = detectedIssues,
+            autoFixesCount = autoFixesCount,
+            warningsCount = warningsCount,
+            errorsCount = errorsCount,
+            summaryMessage = summaryMessage,
+            hasFatalUnresolvedErrors = errorsCount > 0
+        )
+
+        return Pair(workingFiles, report)
+    }
+
+    data class ResourceFixDetail(
+        val filePath: String,
+        val description: String
+    )
+
+    /**
+     * Remove recursos duplicados no Android (.png vs .webp vs .jpg com mesmo nome na mesma pasta de densidade).
      * O Android Resource Merger lança 'Error: Duplicate resources' quando dois arquivos com mesmo nome base e extensões diferentes
      * coexistem na mesma pasta de densidade (ex: mipmap-mdpi/ic_launcher.png e mipmap-mdpi/ic_launcher.webp).
      */
-    fun deduplicateAndroidResources(files: List<ExtractedFile>): Pair<List<ExtractedFile>, List<String>> {
+    fun deduplicateAndroidResources(files: List<ExtractedFile>): Pair<List<ExtractedFile>, List<ResourceFixDetail>> {
         val deduplicated = mutableListOf<ExtractedFile>()
-        val removedDetails = mutableListOf<String>()
+        val removedDetails = mutableListOf<ResourceFixDetail>()
 
         val resRegex = Regex("""^(.*(?:/|^)res/[^/]+)/([^/]+)\.([a-zA-Z0-9]+)$""")
         val seenResources = mutableMapOf<String, ExtractedFile>()
@@ -163,11 +547,12 @@ object ZipProcessor {
                     val existing = seenResources[resourceKey]
                     if (existing != null) {
                         val existingExt = existing.path.substringAfterLast('.').lowercase()
-                        // Prioridade: png > webp > jpg
+                        // Prioridade: xml (vetor) > png > webp > jpg
                         val shouldReplace = when {
                             existingExt == "webp" && extension == "png" -> true
                             existingExt == "jpg" && (extension == "png" || extension == "webp") -> true
-                            existingExt == "xml" && (extension == "png" || extension == "webp") -> false
+                            existingExt == "xml" && (extension == "png" || extension == "webp" || extension == "jpg") -> false
+                            extension == "xml" -> true
                             else -> false
                         }
 
@@ -175,9 +560,19 @@ object ZipProcessor {
                             deduplicated.remove(existing)
                             deduplicated.add(file)
                             seenResources[resourceKey] = file
-                            removedDetails.add("Removido recurso duplicado: ${existing.path} (mantido ${file.path})")
+                            removedDetails.add(
+                                ResourceFixDetail(
+                                    filePath = existing.path,
+                                    description = "Removido recurso duplicado: ${existing.path} (mantido formato prioritário ${file.path})"
+                                )
+                            )
                         } else {
-                            removedDetails.add("Removido recurso duplicado: ${file.path} (mantido ${existing.path})")
+                            removedDetails.add(
+                                ResourceFixDetail(
+                                    filePath = file.path,
+                                    description = "Removido recurso duplicado: ${file.path} (mantido formato prioritário ${existing.path})"
+                                )
+                            )
                         }
                         continue
                     } else {
@@ -194,150 +589,7 @@ object ZipProcessor {
     }
 
     /**
-     * Padroniza inteligentemente as configurações do projeto para evitar erros de compilação:
-     * - gradle-wrapper.properties: fixa Gradle 8.7 (evita incompatibilidades de 9.x, 9.31, etc)
-     * - build.gradle / build.gradle.kts / settings.gradle / toml: alinha AGP (8.5.2) e Kotlin (1.9.24)
-     * - injeta gradlew e gradlew.bat se ausentes
-     * - injeta gradle.properties otimizado (JVM args, AndroidX, non-transitive R)
-     */
-    fun standardizeProjectFiles(files: List<ExtractedFile>): Pair<MutableList<ExtractedFile>, StandardizationResult> {
-        val resultList = mutableListOf<ExtractedFile>()
-        val details = mutableListOf<String>()
-        var modifiedCount = 0
-        var addedCount = 0
-
-        val fileMap = files.associateBy { it.path }.toMutableMap()
-        val isGradleProject = files.any {
-            it.path.endsWith("build.gradle") ||
-            it.path.endsWith("build.gradle.kts") ||
-            it.path.endsWith("settings.gradle") ||
-            it.path.endsWith("settings.gradle.kts") ||
-            it.path.contains("gradle-wrapper.properties")
-        }
-
-        // 1. Processar ou atualizar arquivos existentes
-        for (file in files) {
-            var currentBytes = file.bytes
-            var modified = false
-
-            // Padronizar gradle-wrapper.properties
-            if (file.path.endsWith("gradle/wrapper/gradle-wrapper.properties")) {
-                val originalText = String(currentBytes, Charsets.UTF_8)
-                val newText = standardizeGradleWrapperProperties(originalText)
-                if (newText != originalText) {
-                    currentBytes = newText.toByteArray(Charsets.UTF_8)
-                    modified = true
-                    details.add("Gradle Wrapper ajustado para a versão estável $TARGET_GRADLE_VERSION")
-                }
-            }
-            // Padronizar build.gradle (Groovy)
-            else if (file.path.endsWith("build.gradle")) {
-                val originalText = String(currentBytes, Charsets.UTF_8)
-                val newText = standardizeBuildGradle(originalText)
-                if (newText != originalText) {
-                    currentBytes = newText.toByteArray(Charsets.UTF_8)
-                    modified = true
-                    details.add("Ajustada compatibilidade em ${file.path}")
-                }
-            }
-            // Padronizar build.gradle.kts (Kotlin DSL)
-            else if (file.path.endsWith("build.gradle.kts")) {
-                val originalText = String(currentBytes, Charsets.UTF_8)
-                val newText = standardizeBuildGradleKts(originalText)
-                if (newText != originalText) {
-                    currentBytes = newText.toByteArray(Charsets.UTF_8)
-                    modified = true
-                    details.add("Ajustada compatibilidade em ${file.path}")
-                }
-            }
-            // Padronizar libs.versions.toml
-            else if (file.path.endsWith("gradle/libs.versions.toml")) {
-                val originalText = String(currentBytes, Charsets.UTF_8)
-                val newText = standardizeVersionsToml(originalText)
-                if (newText != originalText) {
-                    currentBytes = newText.toByteArray(Charsets.UTF_8)
-                    modified = true
-                    details.add("Versões de AGP e Kotlin padronizadas em libs.versions.toml")
-                }
-            }
-
-            if (modified) {
-                modifiedCount++
-                resultList.add(file.copy(bytes = currentBytes))
-                fileMap[file.path] = file.copy(bytes = currentBytes)
-            } else {
-                resultList.add(file)
-            }
-        }
-
-        // 2. Se for projeto Gradle/Android, garantir que arquivos essenciais existam
-        if (isGradleProject) {
-            // Garantir gradle-wrapper.properties
-            val wrapperPath = "gradle/wrapper/gradle-wrapper.properties"
-            if (!fileMap.containsKey(wrapperPath)) {
-                val wrapperContent = """
-distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=$TARGET_GRADLE_DISTRIBUTION_URL
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
-""".trimIndent()
-                resultList.add(ExtractedFile(wrapperPath, wrapperContent.toByteArray(Charsets.UTF_8), isText = true))
-                addedCount++
-                details.add("Criado gradle-wrapper.properties apontando para Gradle $TARGET_GRADLE_VERSION")
-            }
-
-            // Garantir gradlew executável unix
-            if (!fileMap.containsKey("gradlew")) {
-                val gradlewScript = generateDefaultGradlew()
-                resultList.add(ExtractedFile("gradlew", gradlewScript.toByteArray(Charsets.UTF_8), isText = true))
-                addedCount++
-                details.add("Injetado script executável 'gradlew' universal")
-            }
-
-            // Garantir gradle.properties com flags anti-falha
-            val gradlePropsPath = "gradle.properties"
-            val existingProps = fileMap[gradlePropsPath]
-            if (existingProps == null) {
-                val propsContent = """
-org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
-android.useAndroidX=true
-android.enableJetifier=true
-android.nonTransitiveRClass=true
-org.gradle.parallel=true
-org.gradle.caching=true
-""".trimIndent()
-                resultList.add(ExtractedFile(gradlePropsPath, propsContent.toByteArray(Charsets.UTF_8), isText = true))
-                addedCount++
-                details.add("Criado gradle.properties com flags otimizadas e anti-crash")
-            } else {
-                val originalText = String(existingProps.bytes, Charsets.UTF_8)
-                var propsText = originalText
-                if (!propsText.contains("android.useAndroidX")) {
-                    propsText += "\nandroid.useAndroidX=true\n"
-                }
-                if (!propsText.contains("android.enableJetifier")) {
-                    propsText += "\nandroid.enableJetifier=true\n"
-                }
-                if (propsText != originalText) {
-                    val idx = resultList.indexOfFirst { it.path == gradlePropsPath }
-                    val updated = ExtractedFile(gradlePropsPath, propsText.toByteArray(Charsets.UTF_8), isText = true)
-                    if (idx >= 0) {
-                        resultList[idx] = updated
-                    } else {
-                        resultList.add(updated)
-                    }
-                    modifiedCount++
-                    details.add("Ativado AndroidX e Jetifier em gradle.properties")
-                }
-            }
-        }
-
-        return Pair(resultList, StandardizationResult(modifiedCount, addedCount, details))
-    }
-
-    /**
-     * Substitui qualquer versão do Gradle (ex: 9.31, 9.0, 7.x, 8.x) pela versão fixa e testada 8.7
+     * Substitui qualquer versão do Gradle pela versão fixa e testada 8.7
      */
     fun standardizeGradleWrapperProperties(content: String): String {
         val regex = Regex("""distributionUrl\s*=\s*.*""", RegexOption.MULTILINE)
@@ -353,17 +605,14 @@ org.gradle.caching=true
      */
     fun standardizeBuildGradle(content: String): String {
         var updated = content
-        // Ex: classpath 'com.android.tools.build:gradle:9.3.1' -> 8.5.2
         val agpRegex = Regex("""com\.android\.tools\.build:gradle:[\d\w.-]+""")
         if (agpRegex.containsMatchIn(updated)) {
             updated = agpRegex.replace(updated, "com.android.tools.build:gradle:$TARGET_AGP_VERSION")
         }
-        // Ex: classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.x" -> 1.9.24
         val kotlinRegex = Regex("""org\.jetbrains\.kotlin:kotlin-gradle-plugin:[\d\w.-]+""")
         if (kotlinRegex.containsMatchIn(updated)) {
             updated = kotlinRegex.replace(updated, "org.jetbrains.kotlin:kotlin-gradle-plugin:$TARGET_KOTLIN_VERSION")
         }
-        // Plugins id 'com.android.application' version '...'
         val pluginsAgp = Regex("""id\s+['"]com\.android\.(application|library)['"]\s+version\s+['"][\d\w.-]+['"]""")
         updated = pluginsAgp.replace(updated) { match ->
             val type = match.groupValues[1]
@@ -398,17 +647,14 @@ org.gradle.caching=true
      */
     fun standardizeVersionsToml(content: String): String {
         var updated = content
-        // agp = "..."
         val agpToml = Regex("""agp\s*=\s*"[\d\w.-]+"""")
         if (agpToml.containsMatchIn(updated)) {
             updated = agpToml.replace(updated, "agp = \"$TARGET_AGP_VERSION\"")
         }
-        // androidGradlePlugin = "..."
         val agpToml2 = Regex("""androidGradlePlugin\s*=\s*"[\d\w.-]+"""")
         if (agpToml2.containsMatchIn(updated)) {
             updated = agpToml2.replace(updated, "androidGradlePlugin = \"$TARGET_AGP_VERSION\"")
         }
-        // kotlin = "..."
         val kotlinToml = Regex("""kotlin\s*=\s*"[\d\w.-]+"""")
         if (kotlinToml.containsMatchIn(updated)) {
             updated = kotlinToml.replace(updated, "kotlin = \"$TARGET_KOTLIN_VERSION\"")
@@ -572,7 +818,7 @@ jobs:
             cat gradle/wrapper/gradle-wrapper.properties
           fi
 
-          # Resolver automaticamente recursos duplicados no Android (ex: ic_launcher.png vs ic_launcher.webp)
+          # Resolver automaticamente recursos Android duplicados (ex: ic_launcher.png vs ic_launcher.webp)
           echo ">>> Verificando e resolvendo recursos Android duplicados..."
           find . -type d \( -name "mipmap*" -o -name "drawable*" \) 2>/dev/null | while read -r dir; do
             [ -d "${'$'}dir" ] || continue

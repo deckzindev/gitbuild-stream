@@ -29,4 +29,7 @@ interface CompilationDao {
 
     @Query("DELETE FROM compilations")
     suspend fun clearAll()
+
+    @Query("DELETE FROM compilations WHERE fileName LIKE 'Projeto (%' OR fileName = 'Cloud Compiler CI'")
+    suspend fun deleteExternalSyncedRuns()
 }

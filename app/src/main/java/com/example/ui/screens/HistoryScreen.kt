@@ -90,24 +90,6 @@ fun HistoryScreen(
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = { viewModel.syncHistoryFromGitHub() },
-                        enabled = !uiState.isSyncingHistory,
-                        modifier = Modifier.testTag("sync_history_button")
-                    ) {
-                        if (uiState.isSyncingHistory) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Sincronizar"
-                            )
-                        }
-                    }
-
                     if (rawList.isNotEmpty()) {
                         IconButton(
                             onClick = { showClearConfirmDialog = true },
@@ -218,7 +200,7 @@ fun HistoryScreen(
 
                         Text(
                             text = if (rawList.isEmpty())
-                                "As compilações que você realizar aparecerão aqui com status e download do APK."
+                                "Nenhuma compilação realizada no aplicativo ainda. As compilações que você fizer ficarão salvas em cache aqui."
                             else
                                 "Nenhuma compilação encontrada para o filtro selecionado.",
                             fontSize = 13.sp,
@@ -460,6 +442,28 @@ private fun CleanHistoryCard(
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                         maxLines = 1
+                    )
+                }
+            }
+
+            if (!entity.diagnosticSummary.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoFixHigh,
+                        contentDescription = null,
+                        tint = Color(0xFF2E7D32),
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = entity.diagnosticSummary,
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
             }
